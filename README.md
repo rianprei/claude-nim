@@ -1,4 +1,4 @@
-# nim-proxy-gateway
+# claude-nim
 
 Proxy Anthropic Messages API para **[Claude Code](https://claude.com/claude-code)** que entrega modelos **NVIDIA NIM** com a mesma experiência dos modelos Claude nativos — e ao mesmo tempo faz **passthrough real** para `api.anthropic.com` na mesma sessão.
 
@@ -6,7 +6,7 @@ Proxy Anthropic Messages API para **[Claude Code](https://claude.com/claude-code
 Claude Code
     │  POST /v1/messages  (stream SSE, tools, thinking)
     ▼
-nim-proxy-gateway (binário único ~2 MB, RSS ~15 MB)
+claude-nim (binário único ~2 MB, RSS ~15 MB)
     ├── claude-nvidia-* / nvidia-*   →  traduz ↔ OpenAI Chat Completions → integrate.api.nvidia.com
     └── claude-* / outro modelo      →  passthrough SSE → api.anthropic.com (seu token)
 ```
@@ -47,7 +47,7 @@ O `litellm` + Python usava **983 MB de RAM** em idle. Este proxy faz o mesmo tra
 
 ```bash
 # x86-64 Linux
-curl -L https://github.com/rianprei/nim-proxy-gateway/releases/latest/download/nim-proxy-linux-x86_64 -o nim-proxy
+curl -L https://github.com/rianprei/claude-nim/releases/latest/download/nim-proxy-linux-x86_64 -o nim-proxy
 chmod +x nim-proxy
 ```
 
@@ -71,7 +71,7 @@ nim-proxy -addr 127.0.0.1:4111
 
 ```ini
 [Unit]
-Description=nim-proxy-gateway
+Description=claude-nim
 After=network-online.target
 
 [Service]
@@ -91,7 +91,7 @@ WantedBy=default.target
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable --now nim-proxy-gateway
+systemctl --user enable --now claude-nim
 ```
 
 ### Claude Code
