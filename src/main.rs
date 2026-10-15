@@ -1121,14 +1121,35 @@ fn convert_to_oai(req: &Value) -> Value {
         out["stop"] = json!(ss);
     }
 
-    // Reasoning MAXIMIZADO: se o cliente não pediu, forçar "high".
+    // Reasoning: precedência é o que o Claude Code realmente manda —
+    // 1) output_config.effort ("low"|"medium"|"high", slider nativo;
+    //    qualquer outro valor é rejeitado, nunca inventamos nível);
+    // 2) senão thinking.budget_tokens, mapeado grosso (<4096 "low",
+    //    <16384 "medium", senão "high");
+    // 3) senão "high" (Reasoning MAXIMIZADO quando o cliente não sinaliza).
     // Modelos NIM compatíveis (kimi-k3, qwen-thinking) obedecem;
-    // nemotron-3-* reasoning já vem com thinking ligado.
-    if req.get("reasoning_effort").is_none() && req.get("reasoning").is_none() {
-        out["reasoning_effort"] = json!("high");
-    } else if let Some(re) = req.get("reasoning_effort") {
-        out["reasoning_effort"] = re.clone();
-    }
+    // nemotron-3-* reasoning já vem com thinking ligado e ignora o campo.
+    let effort = req
+        .get("output_config")
+        .and_then(|oc| oc.get("effort"))
+        .and_then(|e| e.as_str())
+        .filter(|e| matches!(*e, "low" | "medium" | "high"))
+        .or_else(|| {
+            req.get("thinking")
+                .and_then(|t| t.get("budget_tokens"))
+                .and_then(|b| b.as_i64())
+                .map(|b| {
+                    if b < 4096 {
+                        "low"
+                    } else if b < 16384 {
+                        "medium"
+                    } else {
+                        "high"
+                    }
+                })
+        })
+        .unwrap_or("high");
+    out["reasoning_effort"] = json!(effort);
 
     out
 }
@@ -1236,11 +1257,50 @@ mod tests {
 
     #[test]
     fn convert_reasoning_effort_high() {
+        // Sem output_config.effort nem thinking: default MAXIMIZADO é "high".
         let r = req(json!({"model":"nvidia-nano","max_tokens":10,"messages":[]}));
         let out = convert_to_oai(&r);
         assert_eq!(out["reasoning_effort"], "high");
-        let r2 = req(json!({"model":"nvidia-nano","max_tokens":10,"reasoning_effort":"low","messages":[]}));
-        assert_eq!(convert_to_oai(&r2)["reasoning_effort"], "low");
+    }
+
+    #[test]
+    fn convert_output_config_effort_passa_direto() {
+        let r = req(json!({"model":"nvidia-nano","max_tokens":10,
+            "output_config":{"effort":"low"},"messages":[]}));
+        assert_eq!(convert_to_oai(&r)["reasoning_effort"], "low");
+        let r2 = req(json!({"model":"nvidia-nano","max_tokens":10,
+            "output_config":{"effort":"medium"},"messages":[]}));
+        assert_eq!(convert_to_oai(&r2)["reasoning_effort"], "medium");
+    }
+
+    #[test]
+    fn convert_output_config_effort_lixo_nao_e_encaminhado() {
+        // Valor inventado pelo cliente nunca chega ao upstream.
+        let r = req(json!({"model":"nvidia-nano","max_tokens":10,
+            "output_config":{"effort":"ultracode"},"messages":[]}));
+        assert_eq!(convert_to_oai(&r)["reasoning_effort"], "high");
+    }
+
+    #[test]
+    fn convert_budget_tokens_mapeia_grosso() {
+        let r = req(json!({"model":"nvidia-nano","max_tokens":10,
+            "thinking":{"type":"enabled","budget_tokens":2000},"messages":[]}));
+        assert_eq!(convert_to_oai(&r)["reasoning_effort"], "low");
+        let r2 = req(json!({"model":"nvidia-nano","max_tokens":10,
+            "thinking":{"type":"enabled","budget_tokens":8000},"messages":[]}));
+        assert_eq!(convert_to_oai(&r2)["reasoning_effort"], "medium");
+        let r3 = req(json!({"model":"nvidia-nano","max_tokens":10,
+            "thinking":{"type":"enabled","budget_tokens":32000},"messages":[]}));
+        assert_eq!(convert_to_oai(&r3)["reasoning_effort"], "high");
+    }
+
+    #[test]
+    fn convert_effort_vence_budget_tokens() {
+        let r = req(json!({"model":"nvidia-nano","max_tokens":10,
+            "output_config":{"effort":"low"},
+            "thinking":{"type":"enabled","budget_tokens":32000},
+            "messages":[]}));
+        assert_eq!(convert_to_oai(&r)["reasoning_effort"], "low");
     }
 
     #[test]
