@@ -1532,6 +1532,19 @@ mod tests {
         let r = req(json!({"model":"nvidia-nano","max_tokens":10,
             "output_config":{"effort":"ultracode"},"messages":[]}));
         assert_eq!(convert_to_oai(&r)["reasoning_effort"], "high");
+        // Tipos não-string também caem no default (as_str rejeita número/null).
+        let r2 = req(json!({"model":"nvidia-nano","max_tokens":10,
+            "output_config":{"effort":42},"messages":[]}));
+        assert_eq!(convert_to_oai(&r2)["reasoning_effort"], "high");
+        let r3 = req(json!({"model":"nvidia-nano","max_tokens":10,
+            "output_config":{"effort":null},"messages":[]}));
+        assert_eq!(convert_to_oai(&r3)["reasoning_effort"], "high");
+        // Lixo no effort NÃO bloqueia o canal thinking: a cadeia de
+        // precedência segue para o próximo degrau.
+        let r4 = req(json!({"model":"nvidia-nano","max_tokens":10,
+            "output_config":{"effort":"ultracode"},
+            "thinking":{"type":"enabled","budget_tokens":2000},"messages":[]}));
+        assert_eq!(convert_to_oai(&r4)["reasoning_effort"], "low");
     }
 
     #[test]
@@ -1545,6 +1558,20 @@ mod tests {
         let r3 = req(json!({"model":"nvidia-nano","max_tokens":10,
             "thinking":{"type":"enabled","budget_tokens":32000},"messages":[]}));
         assert_eq!(convert_to_oai(&r3)["reasoning_effort"], "high");
+        // Fronteiras exatas do mapeamento: um refactor para `<=` passaria
+        // verde sem estes pins.
+        let r4 = req(json!({"model":"nvidia-nano","max_tokens":10,
+            "thinking":{"type":"enabled","budget_tokens":4095},"messages":[]}));
+        assert_eq!(convert_to_oai(&r4)["reasoning_effort"], "low");
+        let r5 = req(json!({"model":"nvidia-nano","max_tokens":10,
+            "thinking":{"type":"enabled","budget_tokens":4096},"messages":[]}));
+        assert_eq!(convert_to_oai(&r5)["reasoning_effort"], "medium");
+        let r6 = req(json!({"model":"nvidia-nano","max_tokens":10,
+            "thinking":{"type":"enabled","budget_tokens":16383},"messages":[]}));
+        assert_eq!(convert_to_oai(&r6)["reasoning_effort"], "medium");
+        let r7 = req(json!({"model":"nvidia-nano","max_tokens":10,
+            "thinking":{"type":"enabled","budget_tokens":16384},"messages":[]}));
+        assert_eq!(convert_to_oai(&r7)["reasoning_effort"], "high");
     }
 
     #[test]
