@@ -5,7 +5,7 @@
 //   NIM_API_BASE=http://127.0.0.1:9100/v1   (override p/ testes)
 
 use bytes::Bytes;
-use futures_util::StreamExt;
+use tokio_stream::StreamExt as _;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -75,7 +75,7 @@ enum Mode {
     Gateway,
 }
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
     let addr = parse_addr();
     let nim_key = env::var("NVIDIA_API_KEY").unwrap_or_default();
@@ -107,12 +107,20 @@ async fn main() {
     );
 
     let client = Client::builder()
-        .pool_max_idle_per_host(4)
-        .pool_idle_timeout(Duration::from_secs(60))
+        .pool_max_idle_per_host(8)
+        .pool_idle_timeout(Duration::from_secs(90))
         .tcp_keepalive(Duration::from_secs(90))
         .connect_timeout(Duration::from_secs(DIAL_TIMEOUT_SECS))
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .read_timeout(read_timeout)
+        // HTTP/2 prior knowledge: a API NVIDIA fala h2 — pula ALPN
+        // (1 RTT economizado por conexão nova).
+        .http2_prior_knowledge()
+        // O proxy encaminha corpos SSE já compactados pelo upstream;
+        // descompactar do lado do cliente gasta CPU por chunk à toa.
+        .no_gzip()
+        .no_deflate()
+        .no_brotli()
         .build()
         .expect("client");
 

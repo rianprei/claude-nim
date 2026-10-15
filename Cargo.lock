@@ -530,7 +530,7 @@ name = "nim-proxy"
 version = "2.0.0"
 dependencies = [
  "bytes",
- "futures-util",
+ "futures-core",
  "http-body",
  "http-body-util",
  "hyper",
@@ -685,6 +685,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
+ "h2",
  "http",
  "http-body",
  "http-body-util",
