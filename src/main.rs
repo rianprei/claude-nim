@@ -3,13 +3,14 @@
 //
 //   NVIDIA_API_KEY=nvapi-... LITELLM_MASTER_KEY=sk-... nim-proxy -addr 127.0.0.1:4000
 //   NIM_API_BASE=http://127.0.0.1:9100/v1   (override p/ testes)
+//   (sem -addr: escuta em 127.0.0.1:4000 — fail-closed)
 
 use bytes::Bytes;
-use tokio_stream::StreamExt as _;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::convert::Infallible;
+use tokio_stream::StreamExt as _;
 
 use std::env;
 use tokio::sync::mpsc;
@@ -195,9 +196,15 @@ async fn hyperserve_conn(stream: tokio::net::TcpStream, cfg: Arc<Cfg>) {
     }
 }
 
+// Se o registro do sinal falhar, pendura para sempre em vez de retornar
+// imediatamente — retorno instantâneo mataria o servidor no select!.
+#[cfg(unix)]
 async fn sigterm() {
-    if let Ok(mut s) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-        s.recv().await;
+    match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        Ok(mut s) => {
+            s.recv().await;
+        }
+        Err(_) => std::future::pending::<()>().await,
     }
 }
 
@@ -218,13 +225,15 @@ fn parse_addr() -> String {
         }
     }
     if addr.starts_with(':') {
-        format!("0.0.0.0{}", addr)
+        // Fail-closed: sem host explícito, escuta só no loopback — o proxy
+        // carrega a NVIDIA_API_KEY; expor 0.0.0.0 tem que ser decisão explícita.
+        format!("127.0.0.1{}", addr)
     } else {
         addr
     }
 }
 
-// ─── HTTP mínimo (sem hyper, parsing manual enxuto) ─────────────────────────
+// ─── Router (hyper direto, sem framework) ───────────────────────────────────
 
 // Router: recebe hyper::Request e devolve hyper::Response (body streaming compatível)
 async fn route(
@@ -283,6 +292,18 @@ async fn route(
         let mut r = Response::new(box_body(Full::new(Bytes::new())));
         *r.status_mut() = StatusCode::OK;
         return r;
+    }
+
+    // Auth falhou em endpoint de mensagens: rejeita ANTES de bufferizar o
+    // body — sem isso, request não-autenticado força até 32MB de alocação.
+    if !authed
+        && method == "POST"
+        && matches!(
+            path.as_str(),
+            "/v1/messages" | "/messages" | "/v1/messages/count_tokens" | "/messages/count_tokens"
+        )
+    {
+        return full_response(401, "application/json", json!({"type":"error","error":{"type":"authentication_error","message":"não autorizado"}}).to_string().into_bytes());
     }
 
     // Body com limite: sem isso, cliente não-autenticado força alocação
@@ -396,10 +417,14 @@ async fn route(
                     }
                     Some(a) => a,
                 };
-                cfg.chains
-                    .get(alias.as_str())
-                    .cloned()
-                    .unwrap_or_else(|| vec![Box::leak(alias.into_boxed_str()) as &'static str])
+                match cfg.chains.get(alias.as_str()) {
+                    Some(c) => c.clone(),
+                    // Alias nvidia-* desconhecido: 400 imediato — Box::leak por
+                    // request seria vazamento crescente (e o upstream 404aria).
+                    None => {
+                        return full_response(400, "application/json", json!({"type":"error","error":{"type":"invalid_request_error","message":"modelo desconhecido"}}).to_string().into_bytes())
+                    }
+                }
             } else {
                 match cfg.chains.get(orig_model.as_str()) {
                     None => return full_response(400, "application/json", json!({"type":"error","error":{"type":"invalid_request_error","message":"modelo desconhecido"}}).to_string().into_bytes()),
@@ -728,6 +753,7 @@ async fn pump_stream(
     let mut bytes_stream = Box::pin(resp.bytes_stream());
     let mut buf: Vec<u8> = Vec::new();
     let mut output_tokens = 0i64;
+    let mut input_tokens = 1i64;
     let mut stop_reason = "end_turn".to_string();
     let mut thinking_open = false; // bloco thinking atualmente aberto
     let mut thinking_anth_idx: Option<usize> = None;
@@ -800,8 +826,10 @@ async fn pump_stream(
                 .and_then(|u| u.get("prompt_tokens"))
                 .and_then(|t| t.as_i64())
             {
+                // usage real de entrada chega no chunk final com
+                // stream_options.include_usage — vai no message_delta.
                 if u > 0 {
-                    //usage real de entrada chega no chunk final quando stream_options.include_usage
+                    input_tokens = u;
                 }
             }
             let Some(choice) = v.get("choices").and_then(|c| c.get(0)) else {
@@ -964,7 +992,7 @@ async fn pump_stream(
         stop_reason = "tool_use".into();
     }
 
-    let _ = sse(&tx, "message_delta", json!({"type":"message_delta","delta":{"stop_reason":stop_reason,"stop_sequence":null},"usage":{"output_tokens":output_tokens}})).await;
+    let _ = sse(&tx, "message_delta", json!({"type":"message_delta","delta":{"stop_reason":stop_reason,"stop_sequence":null},"usage":{"input_tokens":input_tokens,"output_tokens":output_tokens}})).await;
     let _ = sse(&tx, "message_stop", json!({"type":"message_stop"})).await;
     eprintln!("[nim-proxy] stream OK via {used_model} (~{output_tokens} tokens)");
 }
@@ -1712,5 +1740,21 @@ mod tests {
         let chains = model_chains();
         assert_eq!(chains["nvidia-ultra"].len(), 3);
         assert_eq!(chains["nvidia-nano"].len(), 1);
+    }
+
+    #[test]
+    fn gateway_aliases_tem_chain_correspondente() {
+        // O 400 para alias nvidia-* desconhecido só é honesto porque TODO
+        // alias canônico do gateway tem chain — este pin guarda a invariante.
+        let chains = model_chains();
+        for alias in [
+            "nvidia-ultra",
+            "nvidia-nemotron",
+            "nvidia-kimi",
+            "nvidia-nano",
+        ] {
+            assert_eq!(gateway_map_model(alias).as_deref(), Some(alias));
+            assert!(chains.contains_key(alias), "alias {alias} sem chain");
+        }
     }
 }
