@@ -1,1 +1,9 @@
+# Rust
 /target
+**/*.rs.bk
+
+# Segredos locais (use .env.example como modelo)
+.env
+
+# UPX / artefatos de release manual
+*.upx

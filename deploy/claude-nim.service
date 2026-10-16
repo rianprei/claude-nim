@@ -1,0 +1,47 @@
+[Unit]
+Description=claude-nim — proxy Anthropic Messages API para NVIDIA NIM (Claude Code)
+Documentation=https://github.com/rianprei/claude-nim
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=claude-nim
+Group=claude-nim
+Environment=MODE=gateway
+Environment=ANTHROPIC_BASE=https://api.anthropic.com
+Environment=MALLOC_ARENA_MAX=2
+EnvironmentFile=/etc/claude-nim/proxy.env
+ExecStart=/usr/local/bin/nim-proxy -addr 127.0.0.1:4111
+Restart=always
+RestartSec=2
+
+# Orçamento de memória: teto rígido e ZERO swap — em estouro, o cgroup é
+# morto e reiniciado (Restart=always) em vez de degenerar o host inteiro.
+# RSS normal do proxy: ~15 MB sob carga.
+MemoryMax=256M
+MemorySwapMax=0
+
+# Hardening mínimo para um proxy sem necessidades especiais
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

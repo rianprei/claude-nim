@@ -6,26 +6,27 @@ Proxy Anthropic Messages API para **[Claude Code](https://claude.com/claude-code
 Claude Code
     │  POST /v1/messages  (stream SSE, tools, thinking)
     ▼
-claude-nim (binário único ~2 MB, RSS ~15 MB)
+claude-nim (binário único ~3 MB · ~1,2 MB com UPX, RSS ~15 MB)
     ├── claude-nvidia-* / nvidia-*   →  traduz ↔ OpenAI Chat Completions → integrate.api.nvidia.com
     └── claude-* / outro modelo      →  passthrough SSE → api.anthropic.com (seu token)
 ```
 
 ## Por que existe
 
-O `litellm` + Python usava **983 MB de RAM** em idle. Este proxy faz o mesmo trabalho (tradução de protocolo) com **um binário Rust de 2 MB e ~15 MB sob carga**, sem runtime, sem venv, sem deps.
+O `litellm` + Python usava **983 MB de RAM** em idle. Este proxy faz o mesmo trabalho (tradução de protocolo) com **um binário Rust de ~3 MB (~1,2 MB com UPX) e ~15 MB sob carga**, sem runtime, sem venv, sem deps.
 
 ## Features
 
 - **Streaming SSE bidirecional** — `message_start` → `content_block_delta` → `message_stop`, índice de blocos alinhado
 - **Tool calling nativo** — `tools` / `tool_use` / `tool_result` / `tool_choice` mapeados 1:1; `tool_calls` intercalados viram blocos separados sem duplicar
 - **Thinking nativo** — `reasoning_content` do NIM vira `content_block` tipo `thinking` + `thinking_delta` (renderiza colapsado, igual ao Claude real)
+- **Effort slider respeitado** — `output_config.effort` do Claude Code vira `reasoning_effort` no NIM (`low`/`medium`/`high`; valor inventado é rejeitado, nunca adivinado); fallback: `thinking.budget_tokens` (fronteiras 4096/16384 pinadas em teste); default `high`
 - **Fallback em cadeia com circuit breaker** — 2 passagens; modelos que respondem 429/5xx entram em cooldown de 60s e são pulados
 - **Keepalive SSE** — `event: ping` a cada 5s de silêncio do upstream (modelos de reasoning pensam em silêncio)
 - **Uso real de tokens** — `stream_options.include_usage`: `output_tokens` no `message_delta` vem do usage do NIM, não de estimativa
 - **Erros no formato Anthropic** — 503 `overloaded_error`, 401, 400, 413, 404 — sempre `{"type":"error","error":{...}}`, nunca envelope OpenAI cru
 - **Falha honesta em stream** — upstream truncado/reset emite `event: error`, não `message_stop` falso
-- **HTTP robusto** — hyper 1.x (HTTP/1.1, chunked request bodies, keep-alive), rustls (sem OpenSSL), timeout de conexão, limite de body 32 MB
+- **HTTP robusto** — hyper direto (sem axum/actix), rustls (sem OpenSSL), **HTTP/2 prior knowledge para a API NVIDIA** (pula ALPN: 1 RTT a menos por conexão), timeout de conexão, limite de body 32 MB
 - **Anti-rebinding** — só aceita `Host: 127.0.0.1`/`localhost` no modo gateway
 - **Auth flexível** — `LITELLM_MASTER_KEY` (comparação constant-time) ou `Bearer sk-ant-*` (token OAuth do Claude Code)
 - **Segurança** — a master key do gateway nunca é repassada ao upstream; zero secrets em log; `Fail-closed` no start
@@ -55,7 +56,7 @@ chmod +x nim-proxy
 
 ```bash
 cargo build --release
-# binário em target/release/nim-proxy (~2 MB)
+# binário em target/release/nim-proxy (~3.2 MB; ~1,2 MB com UPX)
 ```
 
 ## Uso
@@ -67,7 +68,13 @@ export MODE=gateway                   # gateway = NIM + passthrough Anthropic
 nim-proxy -addr 127.0.0.1:4111
 ```
 
-### systemd (user)
+Sem `-addr`, escuta em `127.0.0.1:4000` (fail-closed: expor para a rede exige endereço explícito).
+
+Detalhes de internals no [`docs/architecture.md`](docs/architecture.md); histórico de mudanças no [`CHANGELOG.md`](CHANGELOG.md).
+
+### systemd
+
+Unidade de sistema endurecida de referência (com `MemorySwapMax=0`) em [`deploy/`](deploy/). Para serviço de usuário:
 
 ```ini
 [Unit]
@@ -83,6 +90,7 @@ ExecStart=%h/.local/bin/nim-proxy -addr 127.0.0.1:4111
 Restart=always
 RestartSec=2
 MemoryMax=256M
+MemorySwapMax=0
 NoNewPrivileges=true
 
 [Install]
@@ -131,7 +139,14 @@ Faça `/login` normalmente. Modelos Claude reais e `claude-nvidia-*` funcionam n
 cargo test
 ```
 
-17 testes cobrindo: conversão Anthropic↔OpenAI (tools, hint, clamp, arrays vazios), parser de linha SSE UTF-8-safe (multibyte partido entre chunks), mapeamento de erro, circuit breaker, aliases de modelo, heurística de tokens.
+22 testes cobrindo: conversão Anthropic↔OpenAI (tools, hint, clamp, arrays vazios, **effort slider com fronteiras 4095/4096/16383/16384**, lixo rejeitado), parser de linha SSE UTF-8-safe (multibyte partido entre chunks), mapeamento de erro, circuit breaker, aliases de modelo, heurística de tokens.
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings   # zero warnings
+```
+
+CI no GitHub Actions roda tudo + release build com budget de tamanho (`.github/workflows/ci.yml`).
 
 ## Performance
 
@@ -140,11 +155,11 @@ Medido em produção (i5-9600K, stream de 334–1573 tokens):
 | Métrica | Valor |
 |---|---|
 | RSS em carga | ~15 MB |
-| Binário | ~2.2 MB (`opt-level=z`, `lto=fat`, `strip`) |
+| Binário | ~3.2 MB release (`opt-level=3`, `lto=fat`, `strip`) · **~1,2 MB com UPX** |
 | Chunks SSE | 1.93 µs/evento (dominated por I/O de rede) |
 | CPU | 0.39% de 1 core — 99.6% I/O-bound |
 
-Alvo validado também para hardware fraco (Celeron 2C/4T, 4 GB): `tokio` com 2 workers, pool keep-alive pequeno, `MemoryMax=256M` no cgroup.
+Overclock: runtime `tokio` **current_thread** (1 thread de I/O — zero contenção de scheduler), **HTTP/2 prior knowledge** para a NIM, decompressores desligados (corpo SSE já vem pronto do upstream). Alvo validado também para hardware fraco (Celeron 2C/4T, 4 GB): `MemoryMax=256M` + `MemorySwapMax=0` no cgroup (unidade de referência em [`deploy/`](deploy/)).
 
 ## Limitações conhecidas (honestas)
 
