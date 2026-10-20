@@ -1426,6 +1426,9 @@ fn convert_to_oai(req: &Value) -> Value {
             "none" => json!("none"),
             _ => json!("auto"),
         };
+        // parallel_tool_calls: true (default) — Claude Code uses parallel tool
+        // calls; the NIM API (OpenAI-compatible) supports them.
+        out["parallel_tool_calls"] = json!(true);
     }
 
     // stop_sequences Anthropic -> stop OpenAI
