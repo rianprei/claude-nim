@@ -676,8 +676,12 @@ async fn run_sync(cfg: &Cfg, oai: Value, chain: Chain, orig_model: &str) -> (u16
             }
         }
     }
-    let msg =
-        format!("todos os modelos falharam (último status: {last_status}, causa: {last_cause})");
+    let msg = if last_status == 0 {
+        "todos os modelos em cooldown (falha recente). Aguarde até 60s e tente novamente."
+            .to_string()
+    } else {
+        format!("todos os modelos falharam (último status: {last_status}, causa: {last_cause})")
+    };
     (
         503,
         "application/json".into(),
