@@ -1196,6 +1196,16 @@ fn extract_text(v: &Value) -> String {
                         let input = item.get("input").map(|i| i.to_string()).unwrap_or_default();
                         parts.push(format!("[tool_use {name}: {input}]"));
                     }
+                    "tool_reference" => {
+                        // Claude Code 2.1.300+ tool references
+                        let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                        let rid = item.get("id").and_then(|i| i.as_str()).unwrap_or("");
+                        parts.push(if rid.is_empty() {
+                            format!("[tool_reference: {name}]")
+                        } else {
+                            format!("[tool_reference: {name} ({rid})]")
+                        });
+                    }
                     "image" => {
                         parts.push(
                             "[imagem omitida — o modelo NVIDIA configurado é text-only]".into(),
