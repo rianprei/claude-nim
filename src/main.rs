@@ -1277,6 +1277,29 @@ fn convert_to_oai(req: &Value) -> Value {
                                         .into(),
                                 );
                             }
+                            "thinking" => {
+                                // Preserve previous reasoning in history —
+                                // dropping this causes the model to contradict
+                                // its earlier decisions (hallucination root cause).
+                                if let Some(t) = b.get("thinking").and_then(|t| t.as_str()) {
+                                    if !t.is_empty() {
+                                        text_parts.push(format!("<thinking>\n{t}\n</thinking>"));
+                                    }
+                                }
+                            }
+                            "redacted_thinking" => {
+                                text_parts.push("[redacted thinking]".into());
+                            }
+                            "tool_reference" => {
+                                // Claude Code 2.1.300+ tool references
+                                let name = b.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                                let rid = b.get("id").and_then(|i| i.as_str()).unwrap_or("");
+                                text_parts.push(if rid.is_empty() {
+                                    format!("[tool_reference: {name}]")
+                                } else {
+                                    format!("[tool_reference: {name} ({rid})]")
+                                });
+                            }
                             "document" => {
                                 text_parts.push(
                                     "[documento omitido — o modelo NVIDIA configurado é text-only]"
